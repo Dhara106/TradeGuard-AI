@@ -1,0 +1,87 @@
+# ============================================
+# Docker Compose - TradeGuard AI
+# Runs all 3 services + MongoDB with one command:
+#   docker compose up --build
+#
+# Then open http://localhost:5173
+# ============================================
+
+services:
+  # ─── MongoDB Database ───────────────────────────────────────
+  mongodb:
+    image: mongo:7
+    container_name: tradeguard-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - tradeguard-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ─── Django ML Microservice ─────────────────────────────────
+  backend-django:
+    build: ./backend-django
+    container_name: tradeguard-ml
+    restart: unless-stopped
+    environment:
+      - DJANGO_DEBUG=False
+      - DJANGO_ALLOWED_HOSTS=*
+      - GUNICORN_WORKERS=3
+    ports:
+      - "8000:8000"
+    networks:
+      - tradeguard-network
+
+  # ─── Node.js API Gateway ────────────────────────────────────
+  backend-node:
+    build: ./backend-node
+    container_name: tradeguard-api
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - MONGO_URI=mongodb://mongodb:27017/tradeguard
+      - JWT_SECRET=${JWT_SECRET:-tradeguard_super_secret_key_2026}
+      - PORT=5000
+      - DJANGO_ML_URL=http://backend-django:8000
+      # Optional — set these on the host (or a root .env) to enable outbound email.
+      - EMAIL_USER=${EMAIL_USER:-}
+      - EMAIL_PASS=${EMAIL_PASS:-}
+    # Published on the host as ${API_HOST_PORT} (default 5001 to avoid clashing
+    # with a locally-running dev server on 5000). Internal port stays 5000, so
+    # the nginx frontend reaches it at http://backend-node:5000 regardless.
+    ports:
+      - "${API_HOST_PORT:-5001}:5000"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      backend-django:
+        condition: service_started
+    networks:
+      - tradeguard-network
+
+  # ─── React Frontend (nginx) ─────────────────────────────────
+  frontend:
+    build: ./frontend
+    container_name: tradeguard-frontend
+    restart: unless-stopped
+    # Override with FRONTEND_HOST_PORT if 5173 is taken (e.g. a local Vite dev server)
+    ports:
+      - "${FRONTEND_HOST_PORT:-5173}:80"
+    depends_on:
+      - backend-node
+    networks:
+      - tradeguard-network
+
+volumes:
+  mongo-data:
+
+networks:
+  tradeguard-network:
+    driver: bridge
